@@ -1,3 +1,27 @@
+//! An experiment in dynamic single-owner, multiple-borrow smart pointers
+//!
+//! ## Why?
+//!
+//! Rust's Borrow Checker usually statically enforces single-owner, multiple-borrow
+//! semantics. Standard library smart pointers such as `Rc` extend this to provide
+//! a form of _dynamic_ borrow checking, but they do so in a way that also results
+//! in allowing multiple owners while also subtly shifting responsibility for
+//! checking the lifetimes.
+//!
+//! In the static borrow checker case, accessing a borrowed value (reference) can't
+//! fail: lifetimes enforce that the owner must keep the value alive long enough
+//! to satisfy any outstanding borrows. In the dynamic case, this is reversed:
+//! it becomes the responsibility of the holder of a borrowed value (a weak pointer)
+//! to handle the possibility that the underlying value has been invalidated by its
+//! owner(s).
+//!
+//! Dybs investigates a model closer to a dynamic version of the borrow checker's
+//! behaviour: Values retain exactly one owner, which can provide runtime-checked
+//! borrows of that value and which takes on responsibility for ensuring the value
+//! remains valid for the duration of any borrows. This has the consequence that
+//! dropping the owning pointer can _fail_ at runtime if there exist any outstanding
+//! borrows.
+
 use std::{
     ops::Deref,
     ptr::NonNull,
@@ -9,15 +33,18 @@ struct Inner<T: ?Sized> {
     data: T,
 }
 
+/// A dynamic exclusively-owning smart pointer to a value
 pub struct My<T: ?Sized> {
     inner: NonNull<Inner<T>>,
 }
 
+/// A dynamic borrow of a value
 pub struct Dyb<'l, T: ?Sized> {
     inner: &'l Inner<T>,
 }
 
 impl<T> My<T> {
+    /// Construct a new exclusively-owning `My` pointer from a value
     pub fn new(data: T) -> My<T> {
         let inner = Inner {
             count: AtomicUsize::new(0),
@@ -29,6 +56,21 @@ impl<T> My<T> {
     }
 }
 impl<T: ?Sized> My<T> {
+    /// Dynamically borrow the value
+    ///
+    /// This borrow may live for any lifetime less than that of the bounds
+    /// on the value itself - notable, this implies that (as far as the
+    /// borrow-checker is concerned) it may outlive the owner itself!
+    ///
+    /// This actually shifts the responsibility for ensuring the value lives
+    /// long enough back onto the owner (just like the static borrow checker)
+    /// with the caveat that dropping the value early will _fail at runtime_.
+    ///
+    /// Dybs satisfies this requirement by leaking the value and panicking
+    /// in this case. The leaking ensures soundness as in the worst case the
+    /// value will just live forever, while panicking ensures the error is
+    /// reported at the appropriate time rather than unfairly blaming a `Dyb`
+    /// for holding a borrow for "too long" or entirely ignoring the problem.
     pub fn borrow<'l>(&self) -> Dyb<'l, T> {
         // # Safety
         // This deref + borrow yields a reference with lifetime 'l.
