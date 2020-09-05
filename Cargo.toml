@@ -7,5 +7,6 @@ license = "MIT OR Apache-2.0"
 description = "An experiment in dynamic single-owner, multiple-borrow smart pointers"
 readme = "README.md"
 repository = "https://github.com/Skynoodle/dybs"
+categories = [ "memory-management" ]
 
 [dependencies]
