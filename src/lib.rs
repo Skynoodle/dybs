@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub struct Inner<T: ?Sized> {
+struct Inner<T: ?Sized> {
     count: AtomicUsize,
     data: T,
 }
