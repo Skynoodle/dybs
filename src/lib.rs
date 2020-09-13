@@ -88,6 +88,16 @@ impl<T: ?Sized> My<T> {
     }
 }
 
+impl<T: ?Sized> Deref for My<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // # Safety
+        // `inner` is valid for at least the full lifetime of self
+        &unsafe { self.inner.as_ref() }.data
+    }
+}
+
 impl<T: ?Sized> Deref for Dyb<T> {
     type Target = T;
 
@@ -125,6 +135,14 @@ impl<T: ?Sized> Drop for Dyb<T> {
         unsafe { self.inner.as_ref() }
             .count
             .fetch_sub(1, Ordering::Release);
+    }
+}
+
+impl<T: Clone> Clone for My<T> {
+    fn clone(&self) -> Self {
+        // # Safety
+        // `inner` is valid for at least the full lifetime of self
+        Self::new(unsafe { self.inner.as_ref() }.data.clone())
     }
 }
 
@@ -188,5 +206,20 @@ mod tests {
         drop(dyb);
         drop(my);
         drop(dyb_2);
+    }
+
+    #[test]
+    fn my_clone_really_clones() {
+        struct CloneTrack(usize);
+        impl Clone for CloneTrack {
+            fn clone(&self) -> Self {
+                Self(self.0 + 1)
+            }
+        }
+
+        let my_1 = My::new(CloneTrack(1));
+        let my_2 = my_1.clone();
+        assert_eq!(my_1.borrow().0, 1);
+        assert_eq!(my_2.borrow().0, 2);
     }
 }
