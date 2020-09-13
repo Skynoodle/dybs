@@ -39,8 +39,8 @@ pub struct My<T: ?Sized> {
 }
 
 /// A dynamic borrow of a value
-pub struct Dyb<'l, T: ?Sized> {
-    inner: &'l Inner<T>,
+pub struct Dyb<T: ?Sized> {
+    inner: NonNull<Inner<T>>,
 }
 
 impl<T> My<T> {
@@ -71,7 +71,7 @@ impl<T: ?Sized> My<T> {
     /// value will just live forever, while panicking ensures the error is
     /// reported at the appropriate time rather than unfairly blaming a `Dyb`
     /// for holding a borrow for "too long" or entirely ignoring the problem.
-    pub fn borrow<'l>(&self) -> Dyb<'l, T> {
+    pub fn borrow(&self) -> Dyb<T> {
         // # Safety
         // This deref + borrow yields a reference with lifetime 'l.
         // Lifetime 'l may, as the borrow checker is concerned, outlive
@@ -80,18 +80,22 @@ impl<T: ?Sized> My<T> {
         // the reference count, and only decrement it when the Dyb, and
         // therefore also our extended lifetime reference, is dropped,
         // this is sound.
-        let inner: &'l Inner<T> = unsafe { &*self.inner.as_ptr() };
-        inner.count.fetch_add(1, Ordering::Release);
+        unsafe { self.inner.as_ref() }
+            .count
+            .fetch_add(1, Ordering::Release);
 
-        Dyb { inner }
+        Dyb { inner: self.inner }
     }
 }
 
-impl<T: ?Sized> Deref for Dyb<'_, T> {
+impl<T: ?Sized> Deref for Dyb<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner.data
+        // # Safety
+        // We maintain a nonzero refcount in the inner for the full lifetime
+        // of self, so the owning `My` won't have dropped inner.
+        &unsafe { self.inner.as_ref() }.data
     }
 }
 
@@ -113,9 +117,29 @@ impl<T: ?Sized> Drop for My<T> {
     }
 }
 
-impl<T: ?Sized> Drop for Dyb<'_, T> {
+impl<T: ?Sized> Drop for Dyb<T> {
     fn drop(&mut self) {
-        self.inner.count.fetch_sub(1, Ordering::Release);
+        // # Safety
+        // We maintain a nonzero refcount in the inner for the full lifetime
+        // of self, so the owning `My` won't have dropped inner.
+        unsafe { self.inner.as_ref() }
+            .count
+            .fetch_sub(1, Ordering::Release);
+    }
+}
+
+impl<T: ?Sized> Clone for Dyb<T> {
+    fn clone(&self) -> Self {
+        // # Safety
+        // We maintain a nonzero refcount in the inner for the full lifetime
+        // of self, so the owning `My` won't have dropped inner.
+        // After this point, the count has incremented once more for the new
+        // Dyb we return, upholding the invariant for that too.
+        unsafe { self.inner.as_ref() }
+            .count
+            .fetch_add(1, Ordering::Release);
+
+        Self { inner: self.inner }
     }
 }
 
@@ -140,7 +164,29 @@ mod tests {
     )]
     fn invalid_drop_order_panics() {
         let my = My::new(());
-        let _dyb = my.borrow();
+        let dyb = my.borrow();
         drop(my);
+        drop(dyb);
+    }
+
+    #[test]
+    fn dyb_clone_works() {
+        let my = My::new(());
+        let dyb = my.borrow();
+        let dyb_2 = dyb.clone();
+        drop(dyb);
+        drop(dyb_2);
+    }
+    #[test]
+    #[should_panic(
+        expected = "My pointer dropped with outstanding Dybs - this will leak the resource"
+    )]
+    fn invalid_drop_order_with_dyb_clone_panics() {
+        let my = My::new(());
+        let dyb = my.borrow();
+        let dyb_2 = dyb.clone();
+        drop(dyb);
+        drop(my);
+        drop(dyb_2);
     }
 }
