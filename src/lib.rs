@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "unstable", feature(unsize, coerce_unsized, doc_cfg))]
+
 //! An experiment in dynamic single-owner, multiple-borrow smart pointers
 //!
 //! ## Why?
@@ -59,7 +61,7 @@ impl<T: ?Sized> My<T> {
     /// Dynamically borrow the value
     ///
     /// This borrow may live for any lifetime less than that of the bounds
-    /// on the value itself - notable, this implies that (as far as the
+    /// on the value itself - notably, this implies that (as far as the
     /// borrow-checker is concerned) it may outlive the owner itself!
     ///
     /// This actually shifts the responsibility for ensuring the value lives
@@ -161,6 +163,16 @@ impl<T: ?Sized> Clone for Dyb<T> {
     }
 }
 
+#[cfg(feature = "unstable")]
+#[doc(cfg(feature = "unstable"))]
+mod corce_unsized {
+    use super::*;
+    use std::{marker::Unsize, ops::CoerceUnsized};
+
+    impl<U: ?Sized, T: Unsize<U>> CoerceUnsized<My<U>> for My<T> {}
+    impl<U: ?Sized, T: Unsize<U>> CoerceUnsized<Dyb<U>> for Dyb<T> {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +233,18 @@ mod tests {
         let my_2 = my_1.clone();
         assert_eq!(my_1.borrow().0, 1);
         assert_eq!(my_2.borrow().0, 2);
+    }
+
+    #[cfg(feature = "unstable")]
+    #[test]
+    fn can_coerce_unsized() {
+        use std::any::Any;
+        let my = My::new(());
+        let dyb = my.borrow();
+        let my_unsized: My<dyn Any> = my;
+        let dyb_unsized: Dyb<dyn Any> = dyb;
+
+        assert_eq!(my_unsized.downcast_ref(), Some(&()));
+        assert_eq!(dyb_unsized.downcast_ref(), Some(&()));
     }
 }
